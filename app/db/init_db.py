@@ -1,5 +1,5 @@
 from app.db.base import Base
-from app.db.models import AgentRunModel, AppModel, PlatformEventModel
+from app.db.models import APIKeyModel, AgentRunModel, AppModel, PlatformEventModel
 from app.db.session import engine
 
 

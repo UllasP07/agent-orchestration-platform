@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import secrets
+
 from sqlalchemy import desc, select
 
-from app.db.models import AgentRunModel, AppModel, PlatformEventModel
+from app.db.models import APIKeyModel, AgentRunModel, AppModel, PlatformEventModel
 from app.db.session import SessionLocal
-from app.models.schemas import AgentRunRecord, AppRecord, PlatformEvent
+from app.models.schemas import APIKeyRecord, AgentRunRecord, AppRecord, PlatformEvent
 
 
 def create_app_record(app: AppRecord) -> AppRecord:
@@ -34,6 +36,39 @@ def list_app_records() -> list[AppRecord]:
             )
             for row in rows
         ]
+
+
+def create_api_key(app_id: str, name: str = "default") -> APIKeyRecord:
+    api_key_record = APIKeyRecord(
+        app_id=app_id,
+        api_key=f"dp_{secrets.token_urlsafe(32)}",
+        name=name,
+    )
+    with SessionLocal() as session:
+        row = APIKeyModel(
+            key_id=api_key_record.key_id,
+            app_id=api_key_record.app_id,
+            api_key=api_key_record.api_key,
+            name=api_key_record.name,
+            created_at=api_key_record.created_at,
+        )
+        session.add(row)
+        session.commit()
+    return api_key_record
+
+
+def get_api_key_record(api_key: str) -> APIKeyRecord | None:
+    with SessionLocal() as session:
+        row = session.execute(select(APIKeyModel).where(APIKeyModel.api_key == api_key)).scalar_one_or_none()
+        if not row:
+            return None
+        return APIKeyRecord(
+            key_id=row.key_id,
+            app_id=row.app_id,
+            api_key=row.api_key,
+            name=row.name,
+            created_at=row.created_at,
+        )
 
 
 def save_run_record(run: AgentRunRecord) -> AgentRunRecord:

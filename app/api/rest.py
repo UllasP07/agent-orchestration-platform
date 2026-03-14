@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
 from app.agents.service import agent_service
+from app.api.deps import require_api_key
 from app.core.registry import registry
 from app.db.repository import (
+    create_api_key,
     create_app_record,
     get_run_record,
     list_app_records,
@@ -14,8 +16,10 @@ from app.db.repository import (
 )
 from app.events.bus import event_bus
 from app.models.schemas import (
+    APIKeyRecord,
     AgentRunRequest,
     AppCreate,
+    AppWithAPIKey,
     AppRecord,
     EventPublishRequest,
     PlatformEvent,
@@ -36,10 +40,12 @@ async def list_apps() -> list[AppRecord]:
     return list_app_records()
 
 
-@router.post("/apps", response_model=AppRecord)
-async def create_app(payload: AppCreate) -> AppRecord:
+@router.post("/apps", response_model=AppWithAPIKey)
+async def create_app(payload: AppCreate) -> AppWithAPIKey:
     app = AppRecord(**payload.model_dump())
-    return create_app_record(app)
+    create_app_record(app)
+    api_key = create_api_key(app.id)
+    return AppWithAPIKey(app=app, api_key=api_key.api_key)
 
 
 @router.get("/agents")
@@ -56,16 +62,23 @@ async def get_agent(agent_id: str) -> dict:
 
 
 @router.post("/agents/run")
-async def run_agent(request: AgentRunRequest) -> dict:
+async def run_agent(
+    request: AgentRunRequest,
+    api_key: APIKeyRecord = Depends(require_api_key),
+) -> dict:
     try:
-        run = await agent_service.run_agent(request.agent_id, request.input, request.context)
+        run = await agent_service.run_agent(
+            request.agent_id,
+            request.input,
+            {**request.context, "app_id": api_key.app_id},
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return run.model_dump(mode="json")
 
 
 @router.get("/runs/{run_id}")
-async def get_run(run_id: str) -> dict:
+async def get_run(run_id: str, _: APIKeyRecord = Depends(require_api_key)) -> dict:
     run = get_run_record(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -73,20 +86,27 @@ async def get_run(run_id: str) -> dict:
 
 
 @router.post("/events/publish")
-async def publish_event(request: EventPublishRequest) -> dict:
-    event = PlatformEvent(topic=request.topic, payload=request.payload, source=request.source)
+async def publish_event(
+    request: EventPublishRequest,
+    api_key: APIKeyRecord = Depends(require_api_key),
+) -> dict:
+    event = PlatformEvent(
+        topic=request.topic,
+        payload={**request.payload, "app_id": api_key.app_id},
+        source=request.source,
+    )
     save_event_record(event)
     await event_bus.publish(event)
     return event.model_dump(mode="json")
 
 
 @router.get("/events")
-async def list_events() -> list[dict]:
+async def list_events(_: APIKeyRecord = Depends(require_api_key)) -> list[dict]:
     return [event.model_dump(mode="json") for event in list_event_records(100)]
 
 
 @router.get("/events/stream")
-async def stream_events() -> EventSourceResponse:
+async def stream_events(_: APIKeyRecord = Depends(require_api_key)) -> EventSourceResponse:
     async def event_generator():
         async for event in event_bus.subscribe():
             yield {
@@ -99,7 +119,10 @@ async def stream_events() -> EventSourceResponse:
 
 
 @router.post("/tools/call", response_model=ToolResult)
-async def call_tool(request: ToolCallRequest) -> ToolResult:
+async def call_tool(
+    request: ToolCallRequest,
+    _: APIKeyRecord = Depends(require_api_key),
+) -> ToolResult:
     tool = registry.tools.get(request.tool_name)
     if not tool:
         raise HTTPException(status_code=404, detail="Tool not found")

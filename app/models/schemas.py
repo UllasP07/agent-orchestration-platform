@@ -22,6 +22,19 @@ class AppRecord(AppCreate):
     created_at: datetime = Field(default_factory=now_utc)
 
 
+class AppWithAPIKey(BaseModel):
+    app: AppRecord
+    api_key: str
+
+
+class APIKeyRecord(BaseModel):
+    key_id: str = Field(default_factory=lambda: f"key-{uuid4().hex[:12]}")
+    app_id: str
+    api_key: str
+    name: str = "default"
+    created_at: datetime = Field(default_factory=now_utc)
+
+
 class AgentDefinition(BaseModel):
     id: str
     name: str
