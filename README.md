@@ -1,4 +1,3 @@
-# agent-orchestration-platform
 # Developer Platform & AI Agents
 
 A production-style Python project that demonstrates a developer platform for external developers and AI agents.
