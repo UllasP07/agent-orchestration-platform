@@ -6,6 +6,7 @@ from strawberry.scalars import JSON
 
 from app.agents.service import agent_service
 from app.core.registry import registry
+from app.db.repository import list_run_records
 
 
 @strawberry.type
@@ -40,7 +41,7 @@ class Query:
     def runs(self) -> list[AgentRunType]:
         return [
             AgentRunType(run_id=run.run_id, status=run.status, output=run.output)
-            for run in registry.runs.values()
+            for run in list_run_records()
         ]
 
 

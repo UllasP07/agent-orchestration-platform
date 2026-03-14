@@ -5,6 +5,13 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.agents.service import agent_service
 from app.core.registry import registry
+from app.db.repository import (
+    create_app_record,
+    get_run_record,
+    list_app_records,
+    list_event_records,
+    save_event_record,
+)
 from app.events.bus import event_bus
 from app.models.schemas import (
     AgentRunRequest,
@@ -26,14 +33,13 @@ async def health() -> dict[str, str]:
 
 @router.get("/apps", response_model=list[AppRecord])
 async def list_apps() -> list[AppRecord]:
-    return list(registry.apps.values())
+    return list_app_records()
 
 
 @router.post("/apps", response_model=AppRecord)
 async def create_app(payload: AppCreate) -> AppRecord:
     app = AppRecord(**payload.model_dump())
-    registry.apps[app.id] = app
-    return app
+    return create_app_record(app)
 
 
 @router.get("/agents")
@@ -60,7 +66,7 @@ async def run_agent(request: AgentRunRequest) -> dict:
 
 @router.get("/runs/{run_id}")
 async def get_run(run_id: str) -> dict:
-    run = registry.runs.get(run_id)
+    run = get_run_record(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     return run.model_dump(mode="json")
@@ -69,14 +75,14 @@ async def get_run(run_id: str) -> dict:
 @router.post("/events/publish")
 async def publish_event(request: EventPublishRequest) -> dict:
     event = PlatformEvent(topic=request.topic, payload=request.payload, source=request.source)
-    registry.events.append(event)
+    save_event_record(event)
     await event_bus.publish(event)
     return event.model_dump(mode="json")
 
 
 @router.get("/events")
 async def list_events() -> list[dict]:
-    return [event.model_dump(mode="json") for event in registry.events[-100:]]
+    return [event.model_dump(mode="json") for event in list_event_records(100)]
 
 
 @router.get("/events/stream")

@@ -4,21 +4,26 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from app.core.registry import registry
+from app.db.repository import save_event_record, save_run_record
 from app.events.bus import event_bus
 from app.models.schemas import AgentDefinition, AgentRunRecord, PlatformEvent
-
 
 ToolFn = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 
 
 class AgentService:
-    async def run_agent(self, agent_id: str, payload: dict[str, Any], context: dict[str, Any] | None = None) -> AgentRunRecord:
+    async def run_agent(
+        self,
+        agent_id: str,
+        payload: dict[str, Any],
+        context: dict[str, Any] | None = None,
+    ) -> AgentRunRecord:
         if agent_id not in registry.agents:
             raise KeyError(f"Unknown agent_id: {agent_id}")
 
         agent = registry.agents[agent_id]
         run = AgentRunRecord(agent_id=agent_id, status="running", input=payload, context=context or {})
-        registry.runs[run.run_id] = run
+        save_run_record(run)
         await self._publish("run.started", {"run_id": run.run_id, "agent_id": agent_id})
 
         try:
@@ -45,18 +50,20 @@ class AgentService:
             }
             run.steps = steps
             run.updated_at = datetime.now(timezone.utc)
+            save_run_record(run)
             await self._publish("run.completed", {"run_id": run.run_id, "output": run.output})
             return run
         except Exception as exc:  # pragma: no cover
             run.status = "failed"
             run.output = {"error": str(exc)}
             run.updated_at = datetime.now(timezone.utc)
+            save_run_record(run)
             await self._publish("run.failed", {"run_id": run.run_id, "error": str(exc)})
             return run
 
     async def _publish(self, topic: str, payload: dict[str, Any]) -> None:
         event = PlatformEvent(topic=topic, payload=payload, source="agent-service")
-        registry.events.append(event)
+        save_event_record(event)
         await event_bus.publish(event)
 
     def _compose_answer(self, agent: AgentDefinition, payload: dict[str, Any], tool_outputs: dict[str, Any]) -> str:

@@ -22,7 +22,7 @@ def test_create_and_list_app() -> None:
     assert any(app["id"] == data["id"] for app in listed.json())
 
 
-def test_run_agent() -> None:
+def test_run_agent_and_fetch_run() -> None:
     response = client.post(
         "/v1/agents/run",
         json={"agent_id": "agent-support", "input": {"question": "Find anomalies", "customer_id": "cust-42"}},
@@ -31,6 +31,10 @@ def test_run_agent() -> None:
     body = response.json()
     assert body["status"] == "completed"
     assert "tool_outputs" in body["output"]
+
+    fetched = client.get(f"/v1/runs/{body['run_id']}")
+    assert fetched.status_code == 200
+    assert fetched.json()["run_id"] == body["run_id"]
 
 
 def test_graphql_agents_query() -> None:
