@@ -23,15 +23,29 @@ class DevPlatformClient:
     def list_agents(self) -> list[dict[str, Any]]:
         return self._request("GET", "/v1/agents")
 
-    def run_agent(self, agent_id: str, payload: dict[str, Any], context: dict[str, Any] | None = None) -> dict[str, Any]:
+    def run_agent(
+        self,
+        agent_id: str,
+        payload: dict[str, Any],
+        context: dict[str, Any] | None = None,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        headers = {"x-api-key": api_key} if api_key else {}
         return self._request(
             "POST",
             "/v1/agents/run",
             json={"agent_id": agent_id, "input": payload, "context": context or {}},
+            headers=headers,
         )
 
-    def publish_event(self, topic: str, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._request("POST", "/v1/events/publish", json={"topic": topic, "payload": payload})
+    def publish_event(self, topic: str, payload: dict[str, Any], api_key: str | None = None) -> dict[str, Any]:
+        headers = {"x-api-key": api_key} if api_key else {}
+        return self._request(
+            "POST",
+            "/v1/events/publish",
+            json={"topic": topic, "payload": payload},
+            headers=headers,
+        )
 
     def graphql(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._request("POST", "/graphql", json={"query": query, "variables": variables or {}})

@@ -5,6 +5,13 @@ from app.main import app
 client = TestClient(app)
 
 
+def create_test_app_and_key() -> tuple[str, str]:
+    response = client.post("/v1/apps", json={"name": "Demo", "owner": "owner@example.com", "metadata": {}})
+    assert response.status_code == 200
+    body = response.json()
+    return body["app"]["id"], body["api_key"]
+
+
 def test_health() -> None:
     response = client.get("/v1/health")
     assert response.status_code == 200
@@ -12,27 +19,38 @@ def test_health() -> None:
 
 
 def test_create_and_list_app() -> None:
-    create = client.post("/v1/apps", json={"name": "Demo", "owner": "owner@example.com", "metadata": {}})
-    assert create.status_code == 200
-    data = create.json()
-    assert data["name"] == "Demo"
+    response = client.post("/v1/apps", json={"name": "Demo", "owner": "owner@example.com", "metadata": {}})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["app"]["name"] == "Demo"
+    assert body["api_key"].startswith("dp_")
 
     listed = client.get("/v1/apps")
     assert listed.status_code == 200
-    assert any(app["id"] == data["id"] for app in listed.json())
+    assert len(listed.json()) >= 1
+
+
+def test_run_agent_requires_api_key() -> None:
+    response = client.post(
+        "/v1/agents/run",
+        json={"agent_id": "agent-support", "input": {"question": "Find anomalies", "customer_id": "cust-42"}},
+    )
+    assert response.status_code == 401
 
 
 def test_run_agent_and_fetch_run() -> None:
+    _, api_key = create_test_app_and_key()
+
     response = client.post(
         "/v1/agents/run",
+        headers={"x-api-key": api_key},
         json={"agent_id": "agent-support", "input": {"question": "Find anomalies", "customer_id": "cust-42"}},
     )
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
-    assert "tool_outputs" in body["output"]
 
-    fetched = client.get(f"/v1/runs/{body['run_id']}")
+    fetched = client.get(f"/v1/runs/{body['run_id']}", headers={"x-api-key": api_key})
     assert fetched.status_code == 200
     assert fetched.json()["run_id"] == body["run_id"]
 

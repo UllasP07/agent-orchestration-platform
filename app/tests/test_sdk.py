@@ -14,8 +14,12 @@ def test_sdk_flows() -> None:
             return response.json()
 
     client = BoundClient(base_url="http://testserver")
-    apps = client.list_apps()
-    assert isinstance(apps, list)
+    created = client.create_app("SDK Demo", "sdk@example.com")
+    api_key = created["api_key"]
 
-    run = client.run_agent("agent-ops", {"question": "Summarize current system health"})
+    run = client.run_agent(
+        "agent-ops",
+        {"question": "Summarize current system health"},
+        api_key=api_key,
+    )
     assert run["status"] == "completed"
