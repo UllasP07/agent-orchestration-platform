@@ -1,5 +1,6 @@
 from app.core.registry import registry
 from app.core.tools import register_default_tools
+from app.db.repository import upsert_agent_record
 from app.models.schemas import AgentDefinition
 
 
@@ -10,7 +11,7 @@ DEFAULT_AGENTS = [
         description="Investigates customer issues using profile and product telemetry.",
         system_prompt="You are a support operations agent.",
         capabilities=["support", "triage", "summarization"],
-        tools=["get_customer_profile", "query_usage_metrics", "create_case"],
+        tools=["get_customer_profile", "query_usage_metrics"],
     ),
     AgentDefinition(
         id="agent-ops",
@@ -26,4 +27,5 @@ DEFAULT_AGENTS = [
 def bootstrap() -> None:
     register_default_tools()
     for agent in DEFAULT_AGENTS:
-        registry.agents.setdefault(agent.id, agent)
+        upsert_agent_record(agent)
+        registry.agents[agent.id] = agent

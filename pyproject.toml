@@ -1,6 +1,6 @@
 [project]
 name = "developer-platform-ai-agents"
-version = "0.1.0"
+version = "0.3.0"
 description = "Developer platform for AI agents with REST, GraphQL, MCP, SDKs, and realtime events"
 requires-python = ">=3.11"
 dependencies = [
@@ -24,6 +24,10 @@ build-backend = "setuptools.build_meta"
 [tool.pytest.ini_options]
 pythonpath = ["."]
 asyncio_mode = "auto"
+testpaths = ["app/tests"]
+
+[project.scripts]
+devplatform-mcp = "app.mcp.stdio_server:main"
 
 [tool.setuptools.packages.find]
 include = ["app*", "devplatform*"]
