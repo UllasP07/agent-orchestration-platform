@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from typing import Literal
 
-from sqlalchemy import desc, or_, select
+from sqlalchemy import asc, desc, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 
 from app.db.models import (
     APIKeyModel,
@@ -12,6 +14,7 @@ from app.db.models import (
     AgentRunModel,
     AppModel,
     PlatformEventModel,
+    RunStepModel,
     WorkflowModel,
     WorkflowRunModel,
 )
@@ -23,6 +26,7 @@ from app.models.schemas import (
     AgentRunRecord,
     AppRecord,
     PlatformEvent,
+    RunStepRecord,
     WorkflowDefinition,
     WorkflowRunRecord,
     WorkflowStep,
@@ -73,6 +77,17 @@ def _run_from_row(row: AgentRunModel) -> AgentRunRecord:
         context=row.context_json or {},
         output=row.output_json or {},
         steps=row.steps_json or [],
+        error=row.error_json or {},
+        idempotency_key=row.idempotency_key,
+        attempt=row.attempt or 0,
+        max_attempts=row.max_attempts or 3,
+        available_at=row.available_at or row.created_at,
+        worker_id=row.worker_id,
+        claimed_at=row.claimed_at,
+        heartbeat_at=row.heartbeat_at,
+        cancel_requested_at=row.cancel_requested_at,
+        started_at=row.started_at,
+        completed_at=row.completed_at,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -100,6 +115,42 @@ def _workflow_run_from_row(row: WorkflowRunModel) -> WorkflowRunRecord:
         context=row.context_json or {},
         output=row.output_json or {},
         steps=row.steps_json or [],
+        error=row.error_json or {},
+        idempotency_key=row.idempotency_key,
+        attempt=row.attempt or 0,
+        max_attempts=row.max_attempts or 3,
+        available_at=row.available_at or row.created_at,
+        worker_id=row.worker_id,
+        claimed_at=row.claimed_at,
+        heartbeat_at=row.heartbeat_at,
+        cancel_requested_at=row.cancel_requested_at,
+        started_at=row.started_at,
+        completed_at=row.completed_at,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _step_from_row(row: RunStepModel) -> RunStepRecord:
+    return RunStepRecord(
+        step_id=row.step_id,
+        run_id=row.run_id,
+        run_type=row.run_type,
+        app_id=row.app_id,
+        step_index=row.step_index,
+        name=row.name,
+        type=row.type,
+        target=row.target,
+        status=row.status,
+        attempt=row.attempt,
+        max_attempts=row.max_attempts,
+        timeout_seconds=row.timeout_seconds,
+        input=row.input_json or {},
+        output=row.output_json or {},
+        error=row.error_json or {},
+        nested_run_id=row.nested_run_id,
+        started_at=row.started_at,
+        completed_at=row.completed_at,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -262,6 +313,52 @@ def workflow_references_agent(agent_id: str, app_id: str) -> bool:
     )
 
 
+def _new_agent_run_row(run: AgentRunRecord) -> AgentRunModel:
+    return AgentRunModel(
+        run_id=run.run_id,
+        app_id=run.app_id,
+        agent_id=run.agent_id,
+        status=run.status,
+        input_json=run.input,
+        context_json=run.context,
+        output_json=run.output,
+        steps_json=run.steps,
+        error_json=run.error,
+        idempotency_key=run.idempotency_key,
+        attempt=run.attempt,
+        max_attempts=run.max_attempts,
+        available_at=run.available_at,
+        worker_id=run.worker_id,
+        claimed_at=run.claimed_at,
+        heartbeat_at=run.heartbeat_at,
+        cancel_requested_at=run.cancel_requested_at,
+        started_at=run.started_at,
+        completed_at=run.completed_at,
+        created_at=run.created_at,
+        updated_at=run.updated_at,
+    )
+
+
+def enqueue_run_record(run: AgentRunRecord) -> tuple[AgentRunRecord, bool]:
+    """Insert a queued run, returning an existing idempotent run on conflict."""
+    with SessionLocal() as session:
+        session.add(_new_agent_run_row(run))
+        try:
+            session.commit()
+            return run, True
+        except IntegrityError:
+            session.rollback()
+            if not run.idempotency_key:
+                raise
+            row = session.execute(
+                select(AgentRunModel).where(
+                    AgentRunModel.app_id == run.app_id,
+                    AgentRunModel.idempotency_key == run.idempotency_key,
+                )
+            ).scalar_one()
+            return _run_from_row(row), False
+
+
 def save_run_record(run: AgentRunRecord) -> AgentRunRecord:
     with SessionLocal() as session:
         row = session.get(AgentRunModel, run.run_id)
@@ -273,22 +370,20 @@ def save_run_record(run: AgentRunRecord) -> AgentRunRecord:
             row.context_json = run.context
             row.output_json = run.output
             row.steps_json = run.steps
+            row.error_json = run.error
+            row.idempotency_key = run.idempotency_key
+            row.attempt = run.attempt
+            row.max_attempts = run.max_attempts
+            row.available_at = run.available_at
+            row.worker_id = run.worker_id
+            row.claimed_at = run.claimed_at
+            row.heartbeat_at = run.heartbeat_at
+            row.cancel_requested_at = run.cancel_requested_at
+            row.started_at = run.started_at
+            row.completed_at = run.completed_at
             row.updated_at = run.updated_at
         else:
-            session.add(
-                AgentRunModel(
-                    run_id=run.run_id,
-                    app_id=run.app_id,
-                    agent_id=run.agent_id,
-                    status=run.status,
-                    input_json=run.input,
-                    context_json=run.context,
-                    output_json=run.output,
-                    steps_json=run.steps,
-                    created_at=run.created_at,
-                    updated_at=run.updated_at,
-                )
-            )
+            session.add(_new_agent_run_row(run))
         session.commit()
     return run
 
@@ -298,6 +393,12 @@ def get_run_record(run_id: str, app_id: str) -> AgentRunRecord | None:
         row = session.execute(
             select(AgentRunModel).where(AgentRunModel.run_id == run_id, AgentRunModel.app_id == app_id)
         ).scalar_one_or_none()
+        return _run_from_row(row) if row else None
+
+
+def get_run_record_unscoped(run_id: str) -> AgentRunRecord | None:
+    with SessionLocal() as session:
+        row = session.get(AgentRunModel, run_id)
         return _run_from_row(row) if row else None
 
 
@@ -377,6 +478,51 @@ def delete_workflow_record(workflow_id: str, app_id: str) -> bool:
         return True
 
 
+def _new_workflow_run_row(run: WorkflowRunRecord) -> WorkflowRunModel:
+    return WorkflowRunModel(
+        run_id=run.run_id,
+        workflow_id=run.workflow_id,
+        app_id=run.app_id,
+        status=run.status,
+        input_json=run.input,
+        context_json=run.context,
+        output_json=run.output,
+        steps_json=run.steps,
+        error_json=run.error,
+        idempotency_key=run.idempotency_key,
+        attempt=run.attempt,
+        max_attempts=run.max_attempts,
+        available_at=run.available_at,
+        worker_id=run.worker_id,
+        claimed_at=run.claimed_at,
+        heartbeat_at=run.heartbeat_at,
+        cancel_requested_at=run.cancel_requested_at,
+        started_at=run.started_at,
+        completed_at=run.completed_at,
+        created_at=run.created_at,
+        updated_at=run.updated_at,
+    )
+
+
+def enqueue_workflow_run_record(run: WorkflowRunRecord) -> tuple[WorkflowRunRecord, bool]:
+    with SessionLocal() as session:
+        session.add(_new_workflow_run_row(run))
+        try:
+            session.commit()
+            return run, True
+        except IntegrityError:
+            session.rollback()
+            if not run.idempotency_key:
+                raise
+            row = session.execute(
+                select(WorkflowRunModel).where(
+                    WorkflowRunModel.app_id == run.app_id,
+                    WorkflowRunModel.idempotency_key == run.idempotency_key,
+                )
+            ).scalar_one()
+            return _workflow_run_from_row(row), False
+
+
 def save_workflow_run_record(run: WorkflowRunRecord) -> WorkflowRunRecord:
     with SessionLocal() as session:
         row = session.get(WorkflowRunModel, run.run_id)
@@ -384,22 +530,20 @@ def save_workflow_run_record(run: WorkflowRunRecord) -> WorkflowRunRecord:
             row.status = run.status
             row.output_json = run.output
             row.steps_json = run.steps
+            row.error_json = run.error
+            row.idempotency_key = run.idempotency_key
+            row.attempt = run.attempt
+            row.max_attempts = run.max_attempts
+            row.available_at = run.available_at
+            row.worker_id = run.worker_id
+            row.claimed_at = run.claimed_at
+            row.heartbeat_at = run.heartbeat_at
+            row.cancel_requested_at = run.cancel_requested_at
+            row.started_at = run.started_at
+            row.completed_at = run.completed_at
             row.updated_at = run.updated_at
         else:
-            session.add(
-                WorkflowRunModel(
-                    run_id=run.run_id,
-                    workflow_id=run.workflow_id,
-                    app_id=run.app_id,
-                    status=run.status,
-                    input_json=run.input,
-                    context_json=run.context,
-                    output_json=run.output,
-                    steps_json=run.steps,
-                    created_at=run.created_at,
-                    updated_at=run.updated_at,
-                )
-            )
+            session.add(_new_workflow_run_row(run))
         session.commit()
     return run
 
@@ -415,6 +559,12 @@ def get_workflow_run_record(run_id: str, app_id: str) -> WorkflowRunRecord | Non
         return _workflow_run_from_row(row) if row else None
 
 
+def get_workflow_run_record_unscoped(run_id: str) -> WorkflowRunRecord | None:
+    with SessionLocal() as session:
+        row = session.get(WorkflowRunModel, run_id)
+        return _workflow_run_from_row(row) if row else None
+
+
 def list_workflow_run_records(app_id: str, limit: int = 100) -> list[WorkflowRunRecord]:
     with SessionLocal() as session:
         rows = session.execute(
@@ -424,6 +574,321 @@ def list_workflow_run_records(app_id: str, limit: int = 100) -> list[WorkflowRun
             .limit(limit)
         ).scalars().all()
         return [_workflow_run_from_row(row) for row in rows]
+
+
+WorkKind = Literal["agent", "workflow"]
+TERMINAL_RUN_STATUSES = {"cancelled", "completed", "failed"}
+RUNNABLE_STATUSES = {"queued", "retrying"}
+
+
+def _claim_agent_in_session(session, run_id: str, worker_id: str, now: datetime) -> AgentRunRecord | None:
+    result = session.execute(
+        update(AgentRunModel)
+        .where(
+            AgentRunModel.run_id == run_id,
+            AgentRunModel.status.in_(RUNNABLE_STATUSES),
+            or_(AgentRunModel.available_at.is_(None), AgentRunModel.available_at <= now),
+        )
+        .values(
+            status="running",
+            worker_id=worker_id,
+            claimed_at=now,
+            heartbeat_at=now,
+            started_at=func.coalesce(AgentRunModel.started_at, now),
+            attempt=func.coalesce(AgentRunModel.attempt, 0) + 1,
+            updated_at=now,
+        )
+    )
+    if result.rowcount != 1:
+        session.rollback()
+        return None
+    session.commit()
+    return _run_from_row(session.get(AgentRunModel, run_id))
+
+
+def _claim_workflow_in_session(session, run_id: str, worker_id: str, now: datetime) -> WorkflowRunRecord | None:
+    result = session.execute(
+        update(WorkflowRunModel)
+        .where(
+            WorkflowRunModel.run_id == run_id,
+            WorkflowRunModel.status.in_(RUNNABLE_STATUSES),
+            or_(WorkflowRunModel.available_at.is_(None), WorkflowRunModel.available_at <= now),
+        )
+        .values(
+            status="running",
+            worker_id=worker_id,
+            claimed_at=now,
+            heartbeat_at=now,
+            started_at=func.coalesce(WorkflowRunModel.started_at, now),
+            attempt=func.coalesce(WorkflowRunModel.attempt, 0) + 1,
+            updated_at=now,
+        )
+    )
+    if result.rowcount != 1:
+        session.rollback()
+        return None
+    session.commit()
+    return _workflow_run_from_row(session.get(WorkflowRunModel, run_id))
+
+
+def claim_agent_run(run_id: str, worker_id: str) -> AgentRunRecord | None:
+    with SessionLocal() as session:
+        return _claim_agent_in_session(session, run_id, worker_id, _now_utc())
+
+
+def claim_workflow_run(run_id: str, worker_id: str) -> WorkflowRunRecord | None:
+    with SessionLocal() as session:
+        return _claim_workflow_in_session(session, run_id, worker_id, _now_utc())
+
+
+def claim_next_run(worker_id: str) -> tuple[WorkKind, AgentRunRecord | WorkflowRunRecord] | None:
+    """Claim the oldest available run with a compare-and-set status update."""
+    now = _now_utc()
+    with SessionLocal() as session:
+        agent_candidate = session.execute(
+            select(AgentRunModel.run_id, AgentRunModel.created_at)
+            .where(
+                AgentRunModel.status.in_(RUNNABLE_STATUSES),
+                or_(AgentRunModel.available_at.is_(None), AgentRunModel.available_at <= now),
+            )
+            .order_by(asc(AgentRunModel.created_at))
+            .limit(1)
+        ).first()
+        workflow_candidate = session.execute(
+            select(WorkflowRunModel.run_id, WorkflowRunModel.created_at)
+            .where(
+                WorkflowRunModel.status.in_(RUNNABLE_STATUSES),
+                or_(WorkflowRunModel.available_at.is_(None), WorkflowRunModel.available_at <= now),
+            )
+            .order_by(asc(WorkflowRunModel.created_at))
+            .limit(1)
+        ).first()
+
+        if not agent_candidate and not workflow_candidate:
+            return None
+        if agent_candidate and (
+            not workflow_candidate or agent_candidate.created_at <= workflow_candidate.created_at
+        ):
+            claimed = _claim_agent_in_session(session, agent_candidate.run_id, worker_id, now)
+            return ("agent", claimed) if claimed else None
+        claimed = _claim_workflow_in_session(session, workflow_candidate.run_id, worker_id, now)
+        return ("workflow", claimed) if claimed else None
+
+
+def heartbeat_run(run_type: WorkKind, run_id: str, worker_id: str) -> bool:
+    model = AgentRunModel if run_type == "agent" else WorkflowRunModel
+    now = _now_utc()
+    with SessionLocal() as session:
+        result = session.execute(
+            update(model)
+            .where(
+                model.run_id == run_id,
+                model.worker_id == worker_id,
+                model.status.in_({"running", "cancelling"}),
+            )
+            .values(heartbeat_at=now, updated_at=now)
+        )
+        session.commit()
+        return result.rowcount == 1
+
+
+def run_cancel_requested(run_type: WorkKind, run_id: str) -> bool:
+    model = AgentRunModel if run_type == "agent" else WorkflowRunModel
+    with SessionLocal() as session:
+        row = session.get(model, run_id)
+        return bool(row and (row.cancel_requested_at is not None or row.status in {"cancelling", "cancelled"}))
+
+
+def _request_cancel(model, converter, run_id: str, app_id: str):
+    now = _now_utc()
+    with SessionLocal() as session:
+        row = session.execute(
+            select(model).where(model.run_id == run_id, model.app_id == app_id)
+        ).scalar_one_or_none()
+        if not row:
+            return None
+        if row.status not in TERMINAL_RUN_STATUSES:
+            row.cancel_requested_at = now
+            row.updated_at = now
+            if row.status in RUNNABLE_STATUSES:
+                row.status = "cancelled"
+                row.completed_at = now
+            else:
+                row.status = "cancelling"
+            session.commit()
+        return converter(row)
+
+
+def request_agent_run_cancel(run_id: str, app_id: str) -> AgentRunRecord | None:
+    return _request_cancel(AgentRunModel, _run_from_row, run_id, app_id)
+
+
+def request_workflow_run_cancel(run_id: str, app_id: str) -> WorkflowRunRecord | None:
+    return _request_cancel(WorkflowRunModel, _workflow_run_from_row, run_id, app_id)
+
+
+def requeue_or_fail_run(
+    run_type: WorkKind,
+    run_id: str,
+    error: dict,
+    retry_delay_seconds: float,
+) -> AgentRunRecord | WorkflowRunRecord | None:
+    model = AgentRunModel if run_type == "agent" else WorkflowRunModel
+    converter = _run_from_row if run_type == "agent" else _workflow_run_from_row
+    now = _now_utc()
+    with SessionLocal() as session:
+        row = session.get(model, run_id)
+        if not row:
+            return None
+        row.error_json = error
+        row.worker_id = None
+        row.claimed_at = None
+        row.heartbeat_at = None
+        row.updated_at = now
+        if row.cancel_requested_at is not None:
+            row.status = "cancelled"
+            row.completed_at = now
+        elif (row.attempt or 0) < (row.max_attempts or 1):
+            row.status = "retrying"
+            row.available_at = now + timedelta(seconds=retry_delay_seconds)
+        else:
+            row.status = "failed"
+            row.completed_at = now
+        session.commit()
+        return converter(row)
+
+
+def recover_stale_runs(lease_timeout_seconds: float) -> int:
+    """Release expired worker leases and make interrupted steps resumable."""
+    now = _now_utc()
+    cutoff = now - timedelta(seconds=lease_timeout_seconds)
+    recovered_ids: list[tuple[WorkKind, str, bool]] = []
+    with SessionLocal() as session:
+        for run_type, model in (("agent", AgentRunModel), ("workflow", WorkflowRunModel)):
+            rows = session.execute(
+                select(model).where(
+                    model.status.in_({"running", "cancelling"}),
+                    or_(model.heartbeat_at.is_(None), model.heartbeat_at < cutoff),
+                )
+            ).scalars().all()
+            for row in rows:
+                was_cancelled = row.cancel_requested_at is not None or row.status == "cancelling"
+                if was_cancelled:
+                    row.status = "cancelled"
+                    row.completed_at = now
+                else:
+                    row.status = "queued"
+                    row.available_at = now
+                row.worker_id = None
+                row.claimed_at = None
+                row.heartbeat_at = None
+                row.updated_at = now
+                recovered_ids.append((run_type, row.run_id, was_cancelled))
+
+        for run_type, run_id, was_cancelled in recovered_ids:
+            steps = session.execute(
+                select(RunStepModel).where(
+                    RunStepModel.run_type == run_type,
+                    RunStepModel.run_id == run_id,
+                    RunStepModel.status.in_({"running", "retrying"}),
+                )
+            ).scalars().all()
+            for step in steps:
+                step.status = "cancelled" if was_cancelled else "pending"
+                step.completed_at = now if was_cancelled else None
+                step.error_json = {
+                    "code": "run_cancelled" if was_cancelled else "worker_lease_expired",
+                    "message": "Run cancellation requested" if was_cancelled else "Worker lease expired",
+                }
+                step.updated_at = now
+        session.commit()
+    return len(recovered_ids)
+
+
+def get_or_create_run_step(step: RunStepRecord) -> RunStepRecord:
+    with SessionLocal() as session:
+        existing = session.execute(
+            select(RunStepModel).where(
+                RunStepModel.run_type == step.run_type,
+                RunStepModel.run_id == step.run_id,
+                RunStepModel.step_index == step.step_index,
+            )
+        ).scalar_one_or_none()
+        if existing:
+            return _step_from_row(existing)
+        session.add(
+            RunStepModel(
+                step_id=step.step_id,
+                run_id=step.run_id,
+                run_type=step.run_type,
+                app_id=step.app_id,
+                step_index=step.step_index,
+                name=step.name,
+                type=step.type,
+                target=step.target,
+                status=step.status,
+                attempt=step.attempt,
+                max_attempts=step.max_attempts,
+                timeout_seconds=step.timeout_seconds,
+                input_json=step.input,
+                output_json=step.output,
+                error_json=step.error,
+                nested_run_id=step.nested_run_id,
+                started_at=step.started_at,
+                completed_at=step.completed_at,
+                created_at=step.created_at,
+                updated_at=step.updated_at,
+            )
+        )
+        try:
+            session.commit()
+            return step
+        except IntegrityError:
+            session.rollback()
+            row = session.execute(
+                select(RunStepModel).where(
+                    RunStepModel.run_type == step.run_type,
+                    RunStepModel.run_id == step.run_id,
+                    RunStepModel.step_index == step.step_index,
+                )
+            ).scalar_one()
+            return _step_from_row(row)
+
+
+def save_run_step(step: RunStepRecord) -> RunStepRecord:
+    with SessionLocal() as session:
+        row = session.get(RunStepModel, step.step_id)
+        if not row:
+            raise KeyError(f"Unknown step_id: {step.step_id}")
+        row.status = step.status
+        row.attempt = step.attempt
+        row.max_attempts = step.max_attempts
+        row.timeout_seconds = step.timeout_seconds
+        row.input_json = step.input
+        row.output_json = step.output
+        row.error_json = step.error
+        row.nested_run_id = step.nested_run_id
+        row.started_at = step.started_at
+        row.completed_at = step.completed_at
+        row.updated_at = step.updated_at
+        session.commit()
+    return step
+
+
+def list_run_step_records(
+    run_type: WorkKind,
+    run_id: str,
+    app_id: str | None = None,
+) -> list[RunStepRecord]:
+    with SessionLocal() as session:
+        statement = select(RunStepModel).where(
+            RunStepModel.run_type == run_type,
+            RunStepModel.run_id == run_id,
+        )
+        if app_id:
+            statement = statement.where(RunStepModel.app_id == app_id)
+        rows = session.execute(statement.order_by(asc(RunStepModel.step_index))).scalars().all()
+        return [_step_from_row(row) for row in rows]
 
 
 def save_event_record(event: PlatformEvent) -> PlatformEvent:

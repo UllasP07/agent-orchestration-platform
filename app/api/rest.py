@@ -23,6 +23,7 @@ from app.db.repository import (
     list_api_key_records,
     list_event_records,
     list_run_records,
+    list_run_step_records,
     list_workflow_records,
     list_workflow_run_records,
     revoke_api_key,
@@ -46,6 +47,7 @@ from app.models.schemas import (
     AppWithAPIKey,
     EventPublishRequest,
     PlatformEvent,
+    RunStepRecord,
     ToolCallRequest,
     ToolResult,
     WorkflowCreate,
@@ -179,20 +181,41 @@ async def delete_agent(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/agents/run", response_model=AgentRunRecord)
+@router.post("/agents/run", response_model=AgentRunRecord, status_code=status.HTTP_202_ACCEPTED)
 async def run_agent(
     request: AgentRunRequest,
+    response: Response,
+    wait: bool = False,
     api_key: APIKeyRecord = Depends(require_api_key),
 ) -> AgentRunRecord:
     try:
-        return await agent_service.run_agent(
-            request.agent_id,
-            request.input,
-            api_key.app_id,
-            request.context,
-        )
+        if wait:
+            run = await agent_service.run_agent(
+                request.agent_id,
+                request.input,
+                api_key.app_id,
+                request.context,
+                request.idempotency_key,
+                request.max_attempts,
+            )
+            response.status_code = status.HTTP_200_OK
+        else:
+            run = await agent_service.enqueue_agent(
+                request.agent_id,
+                request.input,
+                api_key.app_id,
+                request.context,
+                request.idempotency_key,
+                request.max_attempts,
+            )
+            if run.status in {"completed", "failed", "cancelled"}:
+                response.status_code = status.HTTP_200_OK
+        response.headers["Location"] = f"/v1/runs/{run.run_id}"
+        return run
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
 
 
 @router.get("/runs", response_model=list[AgentRunRecord])
@@ -212,6 +235,27 @@ async def get_run(
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     return run
+
+
+@router.get("/runs/{run_id}/steps", response_model=list[RunStepRecord])
+async def list_run_steps(
+    run_id: str,
+    api_key: APIKeyRecord = Depends(require_api_key),
+) -> list[RunStepRecord]:
+    if not get_run_record(run_id, api_key.app_id):
+        raise HTTPException(status_code=404, detail="Run not found")
+    return list_run_step_records("agent", run_id, api_key.app_id)
+
+
+@router.post("/runs/{run_id}/cancel", response_model=AgentRunRecord)
+async def cancel_run(
+    run_id: str,
+    api_key: APIKeyRecord = Depends(require_api_key),
+) -> AgentRunRecord:
+    try:
+        return await agent_service.cancel_run(run_id, api_key.app_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Run not found") from exc
 
 
 @router.post("/workflows", response_model=WorkflowDefinition, status_code=status.HTTP_201_CREATED)
@@ -278,21 +322,46 @@ async def delete_workflow(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/workflows/{workflow_id}/runs", response_model=WorkflowRunRecord)
+@router.post(
+    "/workflows/{workflow_id}/runs",
+    response_model=WorkflowRunRecord,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def run_workflow(
     workflow_id: str,
     request: WorkflowRunRequest,
+    response: Response,
+    wait: bool = False,
     api_key: APIKeyRecord = Depends(require_api_key),
 ) -> WorkflowRunRecord:
     try:
-        return await workflow_service.run_workflow(
-            workflow_id,
-            request.input,
-            api_key.app_id,
-            request.context,
-        )
+        if wait:
+            run = await workflow_service.run_workflow(
+                workflow_id,
+                request.input,
+                api_key.app_id,
+                request.context,
+                request.idempotency_key,
+                request.max_attempts,
+            )
+            response.status_code = status.HTTP_200_OK
+        else:
+            run = await workflow_service.enqueue_workflow(
+                workflow_id,
+                request.input,
+                api_key.app_id,
+                request.context,
+                request.idempotency_key,
+                request.max_attempts,
+            )
+            if run.status in {"completed", "failed", "cancelled"}:
+                response.status_code = status.HTTP_200_OK
+        response.headers["Location"] = f"/v1/workflow-runs/{run.run_id}"
+        return run
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
 
 
 @router.get("/workflow-runs/{run_id}", response_model=WorkflowRunRecord)
@@ -312,6 +381,27 @@ async def list_workflow_runs(
     api_key: APIKeyRecord = Depends(require_api_key),
 ) -> list[WorkflowRunRecord]:
     return list_workflow_run_records(api_key.app_id, limit)
+
+
+@router.get("/workflow-runs/{run_id}/steps", response_model=list[RunStepRecord])
+async def list_workflow_run_steps(
+    run_id: str,
+    api_key: APIKeyRecord = Depends(require_api_key),
+) -> list[RunStepRecord]:
+    if not get_workflow_run_record(run_id, api_key.app_id):
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+    return list_run_step_records("workflow", run_id, api_key.app_id)
+
+
+@router.post("/workflow-runs/{run_id}/cancel", response_model=WorkflowRunRecord)
+async def cancel_workflow_run(
+    run_id: str,
+    api_key: APIKeyRecord = Depends(require_api_key),
+) -> WorkflowRunRecord:
+    try:
+        return await workflow_service.cancel_run(run_id, api_key.app_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Workflow run not found") from exc
 
 
 @router.post("/events/publish", response_model=PlatformEvent)

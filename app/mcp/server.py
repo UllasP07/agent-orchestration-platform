@@ -20,7 +20,7 @@ router = APIRouter(tags=["mcp"])
 
 CURRENT_PROTOCOL_VERSION = "2026-07-28"
 LEGACY_PROTOCOL_VERSION = "2025-11-25"
-SERVER_INFO = {"name": "developer-platform-mcp", "version": "0.3.0"}
+SERVER_INFO = {"name": "developer-platform-mcp", "version": "0.4.0"}
 
 
 def _tool_catalog() -> list[dict[str, Any]]:

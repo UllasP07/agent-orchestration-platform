@@ -87,6 +87,7 @@ def test_agent_runs_and_events_are_tenant_scoped(client: TestClient) -> None:
     response = client.post(
         "/v1/agents/run",
         headers=auth(key_a),
+        params={"wait": "true"},
         json={"agent_id": "agent-ops", "input": {"question": "Check health"}},
     )
     assert response.status_code == 200
@@ -141,6 +142,7 @@ def test_workflow_executes_tool_and_agent_steps(client: TestClient) -> None:
     response = client.post(
         f"/v1/workflows/{workflow_id}/runs",
         headers=auth(api_key),
+        params={"wait": "true"},
         json={"input": {"service": "api"}, "context": {"trace_id": "trace-1"}},
     )
     assert response.status_code == 200
@@ -232,6 +234,33 @@ def test_graphql_and_current_mcp_discovery(client: TestClient) -> None:
     ).json()["result"]
     assert [tool["name"] for tool in tools["tools"]] == sorted(tool["name"] for tool in tools["tools"])
     assert tools["cacheScope"] == "private"
+
+    mutation = client.post(
+        "/graphql",
+        headers=auth(api_key),
+        json={
+            "query": (
+                'mutation { runAgent(input: {agentId: "agent-ops", '
+                'payload: {question: "GraphQL health"}}) { runId status } }'
+            )
+        },
+    ).json()
+    assert mutation["data"]["runAgent"]["status"] == "completed"
+
+    mcp_run = client.post(
+        "/mcp",
+        headers=auth(api_key),
+        json={
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "run_agent",
+                "arguments": {"agent_id": "agent-ops", "payload": {"question": "MCP health"}},
+            },
+        },
+    ).json()
+    assert mcp_run["result"]["structuredContent"]["status"] == "completed"
 
 
 @pytest.mark.asyncio
