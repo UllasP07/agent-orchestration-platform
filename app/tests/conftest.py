@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 _database_file = tempfile.NamedTemporaryFile(prefix="devplatform-tests-", suffix=".sqlite", delete=False)
 _database_file.close()
 os.environ["DEVPLATFORM_DATABASE_URL"] = f"sqlite:///{_database_file.name}"
+os.environ["DEVPLATFORM_WORKER_ENABLED"] = "false"
 
 from app.core.bootstrap import bootstrap  # noqa: E402
 from app.core.registry import registry  # noqa: E402
@@ -25,6 +26,7 @@ def isolated_database() -> Generator[None, None, None]:
     Base.metadata.drop_all(bind=engine)
     init_db()
     registry.agents.clear()
+    registry.tools.clear()
     bootstrap()
     yield
 

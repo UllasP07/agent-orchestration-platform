@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import httpx
@@ -99,11 +100,22 @@ class DevPlatformClient:
         payload: dict[str, Any],
         context: dict[str, Any] | None = None,
         api_key: str | None = None,
+        *,
+        wait: bool = False,
+        idempotency_key: str | None = None,
+        max_attempts: int = 3,
     ) -> dict[str, Any]:
         return self._request(
             "POST",
             "/v1/agents/run",
-            json={"agent_id": agent_id, "input": payload, "context": context or {}},
+            params={"wait": str(wait).lower()},
+            json={
+                "agent_id": agent_id,
+                "input": payload,
+                "context": context or {},
+                "idempotency_key": idempotency_key,
+                "max_attempts": max_attempts,
+            },
             headers=self._auth_headers(api_key),
         )
 
@@ -117,6 +129,26 @@ class DevPlatformClient:
 
     def get_run(self, run_id: str, api_key: str | None = None) -> dict[str, Any]:
         return self._request("GET", f"/v1/runs/{run_id}", headers=self._auth_headers(api_key))
+
+    def get_run_steps(self, run_id: str, api_key: str | None = None) -> list[dict[str, Any]]:
+        return self._request("GET", f"/v1/runs/{run_id}/steps", headers=self._auth_headers(api_key))
+
+    def cancel_run(self, run_id: str, api_key: str | None = None) -> dict[str, Any]:
+        return self._request("POST", f"/v1/runs/{run_id}/cancel", headers=self._auth_headers(api_key))
+
+    def wait_for_run(
+        self,
+        run_id: str,
+        *,
+        timeout: float = 30.0,
+        poll_interval: float = 0.25,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._wait_for_terminal(
+            lambda: self.get_run(run_id, api_key),
+            timeout,
+            poll_interval,
+        )
 
     def create_workflow(
         self,
@@ -162,16 +194,54 @@ class DevPlatformClient:
         payload: dict[str, Any],
         context: dict[str, Any] | None = None,
         api_key: str | None = None,
+        *,
+        wait: bool = False,
+        idempotency_key: str | None = None,
+        max_attempts: int = 3,
     ) -> dict[str, Any]:
         return self._request(
             "POST",
             f"/v1/workflows/{workflow_id}/runs",
-            json={"input": payload, "context": context or {}},
+            params={"wait": str(wait).lower()},
+            json={
+                "input": payload,
+                "context": context or {},
+                "idempotency_key": idempotency_key,
+                "max_attempts": max_attempts,
+            },
             headers=self._auth_headers(api_key),
         )
 
     def get_workflow_run(self, run_id: str, api_key: str | None = None) -> dict[str, Any]:
         return self._request("GET", f"/v1/workflow-runs/{run_id}", headers=self._auth_headers(api_key))
+
+    def get_workflow_run_steps(self, run_id: str, api_key: str | None = None) -> list[dict[str, Any]]:
+        return self._request(
+            "GET",
+            f"/v1/workflow-runs/{run_id}/steps",
+            headers=self._auth_headers(api_key),
+        )
+
+    def cancel_workflow_run(self, run_id: str, api_key: str | None = None) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/v1/workflow-runs/{run_id}/cancel",
+            headers=self._auth_headers(api_key),
+        )
+
+    def wait_for_workflow_run(
+        self,
+        run_id: str,
+        *,
+        timeout: float = 30.0,
+        poll_interval: float = 0.25,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._wait_for_terminal(
+            lambda: self.get_workflow_run(run_id, api_key),
+            timeout,
+            poll_interval,
+        )
 
     def list_workflow_runs(self, limit: int = 100, api_key: str | None = None) -> list[dict[str, Any]]:
         return self._request(
@@ -258,6 +328,17 @@ class DevPlatformClient:
     def _auth_headers(self, api_key: str | None = None) -> dict[str, str]:
         active_key = api_key or self.api_key
         return {"x-api-key": active_key} if active_key else {}
+
+    @staticmethod
+    def _wait_for_terminal(fetch, timeout: float, poll_interval: float) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout
+        while True:
+            run = fetch()
+            if run["status"] in {"cancelled", "completed", "failed"}:
+                return run
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Run did not finish within {timeout:g} seconds")
+            time.sleep(poll_interval)
 
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         with httpx.Client(base_url=self.base_url, timeout=self.timeout) as client:

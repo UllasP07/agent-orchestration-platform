@@ -1,7 +1,7 @@
 [project]
 name = "developer-platform-ai-agents"
-version = "0.3.0"
-description = "Developer platform for AI agents with REST, GraphQL, MCP, SDKs, and realtime events"
+version = "0.4.0"
+description = "Durable agent orchestration platform with workers, REST, GraphQL, MCP, SDKs, and realtime events"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115.0",
@@ -28,6 +28,7 @@ testpaths = ["app/tests"]
 
 [project.scripts]
 devplatform-mcp = "app.mcp.stdio_server:main"
+devplatform-worker = "app.execution.worker_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["app*", "devplatform*"]

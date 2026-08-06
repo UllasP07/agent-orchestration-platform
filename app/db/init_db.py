@@ -9,6 +9,7 @@ from app.db.models import (
     AgentRunModel,
     AppModel,
     PlatformEventModel,
+    RunStepModel,
     WorkflowModel,
     WorkflowRunModel,
 )
@@ -21,13 +22,39 @@ SQLITE_COLUMN_MIGRATIONS = {
         "last_used_at": "DATETIME",
         "revoked_at": "DATETIME",
     },
-    "agent_runs": {"app_id": "VARCHAR"},
+    "agent_runs": {
+        "app_id": "VARCHAR",
+        "error_json": "JSON",
+        "idempotency_key": "VARCHAR",
+        "attempt": "INTEGER",
+        "max_attempts": "INTEGER",
+        "available_at": "DATETIME",
+        "worker_id": "VARCHAR",
+        "claimed_at": "DATETIME",
+        "heartbeat_at": "DATETIME",
+        "cancel_requested_at": "DATETIME",
+        "started_at": "DATETIME",
+        "completed_at": "DATETIME",
+    },
+    "workflow_runs": {
+        "error_json": "JSON",
+        "idempotency_key": "VARCHAR",
+        "attempt": "INTEGER",
+        "max_attempts": "INTEGER",
+        "available_at": "DATETIME",
+        "worker_id": "VARCHAR",
+        "claimed_at": "DATETIME",
+        "heartbeat_at": "DATETIME",
+        "cancel_requested_at": "DATETIME",
+        "started_at": "DATETIME",
+        "completed_at": "DATETIME",
+    },
     "platform_events": {"app_id": "VARCHAR"},
 }
 
 
 def _migrate_sqlite_columns() -> None:
-    """Apply the additive v0.3 migration while preserving existing demo data."""
+    """Apply additive SQLite migrations while preserving existing platform data."""
     if engine.dialect.name != "sqlite":
         return
 
@@ -45,10 +72,47 @@ def _migrate_sqlite_columns() -> None:
         connection.execute(text("CREATE INDEX IF NOT EXISTS ix_platform_events_app_id ON platform_events (app_id)"))
         connection.execute(
             text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_runs_app_idempotency "
+                "ON agent_runs (app_id, idempotency_key) WHERE idempotency_key IS NOT NULL"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_runs_app_idempotency "
+                "ON workflow_runs (app_id, idempotency_key) WHERE idempotency_key IS NOT NULL"
+            )
+        )
+        connection.execute(
+            text(
                 "UPDATE api_keys SET key_prefix = substr(api_key, 1, 10) "
                 "WHERE key_prefix IS NULL"
             )
         )
+        for table_name in ("agent_runs", "workflow_runs"):
+            connection.execute(
+                text(
+                    f"UPDATE {table_name} SET error_json = '{{}}' "
+                    "WHERE error_json IS NULL"
+                )
+            )
+            connection.execute(
+                text(
+                    f"UPDATE {table_name} SET attempt = 0, max_attempts = 3, "
+                    "available_at = created_at WHERE attempt IS NULL"
+                )
+            )
+            connection.execute(
+                text(
+                    f"UPDATE {table_name} SET started_at = created_at "
+                    "WHERE started_at IS NULL AND status IN ('running', 'completed', 'failed')"
+                )
+            )
+            connection.execute(
+                text(
+                    f"UPDATE {table_name} SET completed_at = updated_at "
+                    "WHERE completed_at IS NULL AND status IN ('completed', 'failed')"
+                )
+            )
         legacy_keys = connection.execute(
             text("SELECT key_id, api_key FROM api_keys WHERE api_key NOT LIKE 'sha256:%'")
         ).all()

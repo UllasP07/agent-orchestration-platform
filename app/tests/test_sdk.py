@@ -34,7 +34,7 @@ def test_sdk_complete_flow(client: TestClient) -> None:
         tools=["query_usage_metrics"],
     )
     assert agent["name"] == "Updated SDK Agent"
-    run = sdk.run_agent(agent["id"], {"question": "Summarize system health"})
+    run = sdk.run_agent(agent["id"], {"question": "Summarize system health"}, wait=True)
     assert sdk.get_run(run["run_id"])["status"] == "completed"
     assert sdk.list_runs()[0]["run_id"] == run["run_id"]
 
@@ -48,7 +48,7 @@ def test_sdk_complete_flow(client: TestClient) -> None:
         [{"name": "metrics", "type": "tool", "target": "query_usage_metrics", "arguments": {"window": "6h"}}],
     )
     assert workflow["name"] == "Updated SDK Workflow"
-    workflow_run = sdk.run_workflow(workflow["id"], {"window": "6h"})
+    workflow_run = sdk.run_workflow(workflow["id"], {"window": "6h"}, wait=True)
     assert sdk.get_workflow_run(workflow_run["run_id"])["status"] == "completed"
     assert sdk.list_workflow_runs()[0]["run_id"] == workflow_run["run_id"]
 
