@@ -167,6 +167,9 @@ class DevPlatformClient:
     def list_workflows(self, api_key: str | None = None) -> list[dict[str, Any]]:
         return self._request("GET", "/v1/workflows", headers=self._auth_headers(api_key))
 
+    def list_external_backends(self, api_key: str | None = None) -> list[dict[str, Any]]:
+        return self._request("GET", "/v1/external-backends", headers=self._auth_headers(api_key))
+
     def get_workflow(self, workflow_id: str, api_key: str | None = None) -> dict[str, Any]:
         return self._request("GET", f"/v1/workflows/{workflow_id}", headers=self._auth_headers(api_key))
 
@@ -219,6 +222,28 @@ class DevPlatformClient:
         return self._request(
             "GET",
             f"/v1/workflow-runs/{run_id}/steps",
+            headers=self._auth_headers(api_key),
+        )
+
+    def get_workflow_external_executions(
+        self,
+        run_id: str,
+        api_key: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._request(
+            "GET",
+            f"/v1/workflow-runs/{run_id}/external-executions",
+            headers=self._auth_headers(api_key),
+        )
+
+    def get_external_execution(
+        self,
+        execution_id: str,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/v1/external-executions/{execution_id}",
             headers=self._auth_headers(api_key),
         )
 

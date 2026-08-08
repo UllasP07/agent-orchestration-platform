@@ -13,6 +13,7 @@ from app.db.models import (
     AgentModel,
     AgentRunModel,
     AppModel,
+    ExternalExecutionModel,
     PlatformEventModel,
     RunStepModel,
     WorkflowModel,
@@ -25,6 +26,7 @@ from app.models.schemas import (
     AgentDefinition,
     AgentRunRecord,
     AppRecord,
+    ExternalExecutionRecord,
     PlatformEvent,
     RunStepRecord,
     WorkflowDefinition,
@@ -150,6 +152,32 @@ def _step_from_row(row: RunStepModel) -> RunStepRecord:
         error=row.error_json or {},
         nested_run_id=row.nested_run_id,
         started_at=row.started_at,
+        completed_at=row.completed_at,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _external_execution_from_row(row: ExternalExecutionModel) -> ExternalExecutionRecord:
+    return ExternalExecutionRecord(
+        execution_id=row.execution_id,
+        step_id=row.step_id,
+        run_id=row.run_id,
+        app_id=row.app_id,
+        provider=row.provider,
+        attempt=row.attempt,
+        status=row.status,
+        external_run_id=row.external_run_id,
+        external_state=row.external_state,
+        external_url=row.external_url,
+        idempotency_key=row.idempotency_key,
+        request=row.request_json or {},
+        output=row.output_json or {},
+        error=row.error_json or {},
+        artifacts=row.artifacts_json or [],
+        lineage=row.lineage_json or {},
+        submitted_at=row.submitted_at,
+        last_polled_at=row.last_polled_at,
         completed_at=row.completed_at,
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -889,6 +917,123 @@ def list_run_step_records(
             statement = statement.where(RunStepModel.app_id == app_id)
         rows = session.execute(statement.order_by(asc(RunStepModel.step_index))).scalars().all()
         return [_step_from_row(row) for row in rows]
+
+
+def get_or_create_external_execution(
+    execution: ExternalExecutionRecord,
+) -> ExternalExecutionRecord:
+    with SessionLocal() as session:
+        existing = session.execute(
+            select(ExternalExecutionModel).where(
+                ExternalExecutionModel.step_id == execution.step_id,
+                ExternalExecutionModel.attempt == execution.attempt,
+            )
+        ).scalar_one_or_none()
+        if existing:
+            return _external_execution_from_row(existing)
+
+        session.add(
+            ExternalExecutionModel(
+                execution_id=execution.execution_id,
+                step_id=execution.step_id,
+                run_id=execution.run_id,
+                app_id=execution.app_id,
+                provider=execution.provider,
+                attempt=execution.attempt,
+                status=execution.status,
+                external_run_id=execution.external_run_id,
+                external_state=execution.external_state,
+                external_url=execution.external_url,
+                idempotency_key=execution.idempotency_key,
+                request_json=execution.request,
+                output_json=execution.output,
+                error_json=execution.error,
+                artifacts_json=[artifact.model_dump(mode="json", by_alias=True) for artifact in execution.artifacts],
+                lineage_json=execution.lineage.model_dump(mode="json", by_alias=True),
+                submitted_at=execution.submitted_at,
+                last_polled_at=execution.last_polled_at,
+                completed_at=execution.completed_at,
+                created_at=execution.created_at,
+                updated_at=execution.updated_at,
+            )
+        )
+        try:
+            session.commit()
+            return execution
+        except IntegrityError:
+            session.rollback()
+            row = session.execute(
+                select(ExternalExecutionModel).where(
+                    ExternalExecutionModel.step_id == execution.step_id,
+                    ExternalExecutionModel.attempt == execution.attempt,
+                )
+            ).scalar_one()
+            return _external_execution_from_row(row)
+
+
+def save_external_execution(execution: ExternalExecutionRecord) -> ExternalExecutionRecord:
+    with SessionLocal() as session:
+        row = session.get(ExternalExecutionModel, execution.execution_id)
+        if not row:
+            raise KeyError(f"Unknown external execution_id: {execution.execution_id}")
+        row.status = execution.status
+        row.external_run_id = execution.external_run_id
+        row.external_state = execution.external_state
+        row.external_url = execution.external_url
+        row.request_json = execution.request
+        row.output_json = execution.output
+        row.error_json = execution.error
+        row.artifacts_json = [
+            artifact.model_dump(mode="json", by_alias=True) for artifact in execution.artifacts
+        ]
+        row.lineage_json = execution.lineage.model_dump(mode="json", by_alias=True)
+        row.submitted_at = execution.submitted_at
+        row.last_polled_at = execution.last_polled_at
+        row.completed_at = execution.completed_at
+        row.updated_at = execution.updated_at
+        session.commit()
+    return execution
+
+
+def get_external_execution_record(
+    execution_id: str,
+    app_id: str | None = None,
+) -> ExternalExecutionRecord | None:
+    with SessionLocal() as session:
+        statement = select(ExternalExecutionModel).where(
+            ExternalExecutionModel.execution_id == execution_id
+        )
+        if app_id:
+            statement = statement.where(ExternalExecutionModel.app_id == app_id)
+        row = session.execute(statement).scalar_one_or_none()
+        return _external_execution_from_row(row) if row else None
+
+
+def get_latest_external_execution_for_step(step_id: str) -> ExternalExecutionRecord | None:
+    with SessionLocal() as session:
+        row = session.execute(
+            select(ExternalExecutionModel)
+            .where(ExternalExecutionModel.step_id == step_id)
+            .order_by(desc(ExternalExecutionModel.attempt), desc(ExternalExecutionModel.created_at))
+            .limit(1)
+        ).scalar_one_or_none()
+        return _external_execution_from_row(row) if row else None
+
+
+def list_external_execution_records(
+    run_id: str,
+    app_id: str,
+) -> list[ExternalExecutionRecord]:
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(ExternalExecutionModel)
+            .where(
+                ExternalExecutionModel.run_id == run_id,
+                ExternalExecutionModel.app_id == app_id,
+            )
+            .order_by(asc(ExternalExecutionModel.created_at), asc(ExternalExecutionModel.attempt))
+        ).scalars().all()
+        return [_external_execution_from_row(row) for row in rows]
 
 
 def save_event_record(event: PlatformEvent) -> PlatformEvent:

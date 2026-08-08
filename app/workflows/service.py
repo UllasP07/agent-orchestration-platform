@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from datetime import datetime, timezone
 from time import monotonic
 from typing import Any
@@ -24,7 +25,14 @@ from app.db.repository import (
 )
 from app.events.bus import event_bus
 from app.execution.engine import RunCancelled, StepExecutionFailed, WorkerLeaseLost, execute_step
-from app.models.schemas import PlatformEvent, RunStepRecord, WorkflowRunRecord
+from app.external.service import external_execution_service
+from app.external.backends.base import ExternalBackendError
+from app.models.schemas import (
+    ExternalExecutionRecord,
+    PlatformEvent,
+    RunStepRecord,
+    WorkflowRunRecord,
+)
 
 
 def _now_utc() -> datetime:
@@ -115,7 +123,11 @@ class WorkflowService:
                     "workflow_context": run.context,
                     "previous_output": previous_output,
                 }
-                step_type = "workflow_tool" if definition.type == "tool" else "workflow_agent"
+                step_type = {
+                    "tool": "workflow_tool",
+                    "agent": "workflow_agent",
+                    "external_job": "workflow_external_job",
+                }[definition.type]
                 step = get_or_create_run_step(
                     RunStepRecord(
                         run_id=run.run_id,
@@ -139,7 +151,7 @@ class WorkflowService:
                     async def operation(fn=tool, args: dict[str, Any] = arguments) -> dict:
                         return await fn(args)
 
-                else:
+                elif definition.type == "agent":
                     nested_run: list[str | None] = [step.nested_run_id]
 
                     async def operation(
@@ -161,6 +173,20 @@ class WorkflowService:
                         if agent_run.status != "completed":
                             raise RuntimeError(agent_run.error.get("message", "Agent step failed"))
                         return agent_run.output
+
+                else:
+                    async def operation(
+                        current_step: RunStepRecord = step,
+                        static_arguments: dict[str, Any] = definition.arguments,
+                        run_input: dict[str, Any] = run.input,
+                    ) -> dict:
+                        specification = self._external_specification(static_arguments, run_input)
+                        return await external_execution_service.execute(
+                            current_step,
+                            specification,
+                            definition.data_lineage,
+                            lambda changed: self._publish_external_execution(run, changed),
+                        )
 
                 step = await execute_step(
                     step,
@@ -267,12 +293,41 @@ class WorkflowService:
             },
         )
 
+    async def _publish_external_execution(
+        self,
+        run: WorkflowRunRecord,
+        execution: ExternalExecutionRecord,
+    ) -> None:
+        await self._publish(
+            run.app_id,
+            f"workflow.external.{execution.status}",
+            {
+                "run_id": run.run_id,
+                "step_id": execution.step_id,
+                "execution_id": execution.execution_id,
+                "provider": execution.provider,
+                "attempt": execution.attempt,
+                "external_run_id": execution.external_run_id,
+                "external_state": execution.external_state,
+                "external_url": execution.external_url,
+                "artifacts": [
+                    artifact.model_dump(mode="json", by_alias=True)
+                    for artifact in execution.artifacts
+                ],
+                "error": execution.error,
+            },
+        )
+
     def _compatibility_steps(self, run_id: str) -> list[dict[str, Any]]:
         return [
             {
                 "index": step.step_index,
                 "name": step.name,
-                "type": "agent" if step.type == "workflow_agent" else "tool",
+                "type": {
+                    "workflow_agent": "agent",
+                    "workflow_tool": "tool",
+                    "workflow_external_job": "external_job",
+                }[step.type],
                 "target": step.target,
                 "status": step.status,
                 "attempt": step.attempt,
@@ -282,6 +337,33 @@ class WorkflowService:
             }
             for step in list_run_step_records("workflow", run_id)
         ]
+
+    @staticmethod
+    def _external_specification(
+        static_arguments: dict[str, Any],
+        run_input: dict[str, Any],
+    ) -> dict[str, Any]:
+        specification = deepcopy(static_arguments)
+        runtime_parameters = run_input.get("job_parameters")
+        if runtime_parameters is not None:
+            if not isinstance(runtime_parameters, dict):
+                raise ExternalBackendError(
+                    "input.job_parameters must be an object",
+                    code="invalid_external_job_parameters",
+                    retryable=False,
+                )
+            static_parameters = specification.get("job_parameters", {})
+            if not isinstance(static_parameters, dict):
+                raise ExternalBackendError(
+                    "external job_parameters must be an object",
+                    code="invalid_external_job_parameters",
+                    retryable=False,
+                )
+            specification["job_parameters"] = {
+                **runtime_parameters,
+                **static_parameters,
+            }
+        return specification
 
     async def _publish(self, app_id: str, topic: str, payload: dict[str, Any]) -> None:
         event = PlatformEvent(app_id=app_id, topic=topic, payload=payload, source="workflow-service")

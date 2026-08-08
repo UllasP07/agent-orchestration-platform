@@ -52,6 +52,35 @@ def test_sdk_complete_flow(client: TestClient) -> None:
     assert sdk.get_workflow_run(workflow_run["run_id"])["status"] == "completed"
     assert sdk.list_workflow_runs()[0]["run_id"] == workflow_run["run_id"]
 
+    assert {backend["name"] for backend in sdk.list_external_backends()} == {"databricks", "fake"}
+    external_workflow = sdk.create_workflow(
+        "External SDK Workflow",
+        [
+            {
+                "name": "remote analytics",
+                "type": "external_job",
+                "target": "fake",
+                "arguments": {
+                    "polls_before_completion": 0,
+                    "output": {"rows_written": 4},
+                },
+                "data_lineage": {
+                    "outputs": [
+                        {
+                            "catalog": "agent_platform",
+                            "schema": "gold",
+                            "table": "sdk_metrics",
+                        }
+                    ]
+                },
+            }
+        ],
+    )
+    external_run = sdk.run_workflow(external_workflow["id"], {}, wait=True)
+    executions = sdk.get_workflow_external_executions(external_run["run_id"])
+    assert executions[0]["status"] == "completed"
+    assert sdk.get_external_execution(executions[0]["execution_id"])["artifacts"][0]["table"] == "sdk_metrics"
+
     sdk.publish_event("sdk.completed", {"run_id": run["run_id"]})
     assert sdk.list_events(topic="sdk.completed")[0]["topic"] == "sdk.completed"
     assert sdk.graphql("query { agents { id } }")["data"]["agents"]

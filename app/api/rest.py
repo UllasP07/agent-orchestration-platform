@@ -16,12 +16,14 @@ from app.db.repository import (
     delete_workflow_record,
     get_agent_record,
     get_app_record,
+    get_external_execution_record,
     get_run_record,
     get_workflow_record,
     get_workflow_run_record,
     list_agent_records,
     list_api_key_records,
     list_event_records,
+    list_external_execution_records,
     list_run_records,
     list_run_step_records,
     list_workflow_records,
@@ -33,6 +35,7 @@ from app.db.repository import (
     workflow_references_agent,
 )
 from app.events.bus import event_bus
+from app.external.registry import external_backends
 from app.models.schemas import (
     APIKeyCreate,
     APIKeyRecord,
@@ -46,6 +49,8 @@ from app.models.schemas import (
     AppRecord,
     AppWithAPIKey,
     EventPublishRequest,
+    ExternalBackendPublic,
+    ExternalExecutionRecord,
     PlatformEvent,
     RunStepRecord,
     ToolCallRequest,
@@ -73,9 +78,38 @@ def _public_agent(agent: AgentDefinition) -> AgentPublic:
     )
 
 
+def _validate_workflow_steps(payload: WorkflowCreate, app_id: str) -> None:
+    for step in payload.steps:
+        if step.type == "tool" and step.target not in registry.tools:
+            raise HTTPException(status_code=422, detail=f"Unknown tool: {step.target}")
+        if step.type == "agent" and not get_agent_record(step.target, app_id):
+            raise HTTPException(status_code=422, detail=f"Unknown agent: {step.target}")
+        if step.type == "external_job":
+            backend = external_backends.get(step.target)
+            if not backend:
+                raise HTTPException(status_code=422, detail=f"Unknown external backend: {step.target}")
+            try:
+                backend.validate_spec(step.arguments)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.get("/external-backends", response_model=list[ExternalBackendPublic])
+async def list_external_backends(
+    _: APIKeyRecord = Depends(require_api_key),
+) -> list[ExternalBackendPublic]:
+    return [
+        ExternalBackendPublic(
+            name=name,
+            configured=bool(getattr(external_backends.get(name), "configured", True)),
+        )
+        for name in external_backends.names()
+    ]
 
 
 @router.post("/apps", response_model=AppWithAPIKey, status_code=status.HTTP_201_CREATED)
@@ -263,11 +297,7 @@ async def create_workflow(
     payload: WorkflowCreate,
     api_key: APIKeyRecord = Depends(require_api_key),
 ) -> WorkflowDefinition:
-    for step in payload.steps:
-        if step.type == "tool" and step.target not in registry.tools:
-            raise HTTPException(status_code=422, detail=f"Unknown tool: {step.target}")
-        if step.type == "agent" and not get_agent_record(step.target, api_key.app_id):
-            raise HTTPException(status_code=422, detail=f"Unknown agent: {step.target}")
+    _validate_workflow_steps(payload, api_key.app_id)
     workflow = WorkflowDefinition(app_id=api_key.app_id, **payload.model_dump())
     return create_workflow_record(workflow)
 
@@ -281,11 +311,7 @@ async def update_workflow(
     existing = get_workflow_record(workflow_id, api_key.app_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Workflow not found")
-    for step in payload.steps:
-        if step.type == "tool" and step.target not in registry.tools:
-            raise HTTPException(status_code=422, detail=f"Unknown tool: {step.target}")
-        if step.type == "agent" and not get_agent_record(step.target, api_key.app_id):
-            raise HTTPException(status_code=422, detail=f"Unknown agent: {step.target}")
+    _validate_workflow_steps(payload, api_key.app_id)
     workflow = WorkflowDefinition(
         id=existing.id,
         app_id=existing.app_id,
@@ -391,6 +417,33 @@ async def list_workflow_run_steps(
     if not get_workflow_run_record(run_id, api_key.app_id):
         raise HTTPException(status_code=404, detail="Workflow run not found")
     return list_run_step_records("workflow", run_id, api_key.app_id)
+
+
+@router.get(
+    "/workflow-runs/{run_id}/external-executions",
+    response_model=list[ExternalExecutionRecord],
+)
+async def list_workflow_external_executions(
+    run_id: str,
+    api_key: APIKeyRecord = Depends(require_api_key),
+) -> list[ExternalExecutionRecord]:
+    if not get_workflow_run_record(run_id, api_key.app_id):
+        raise HTTPException(status_code=404, detail="Workflow run not found")
+    return list_external_execution_records(run_id, api_key.app_id)
+
+
+@router.get(
+    "/external-executions/{execution_id}",
+    response_model=ExternalExecutionRecord,
+)
+async def get_external_execution(
+    execution_id: str,
+    api_key: APIKeyRecord = Depends(require_api_key),
+) -> ExternalExecutionRecord:
+    execution = get_external_execution_record(execution_id, api_key.app_id)
+    if not execution:
+        raise HTTPException(status_code=404, detail="External execution not found")
+    return execution
 
 
 @router.post("/workflow-runs/{run_id}/cancel", response_model=WorkflowRunRecord)

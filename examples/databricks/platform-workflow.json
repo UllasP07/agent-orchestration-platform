@@ -1,0 +1,47 @@
+{
+  "name": "Databricks lakehouse analytics",
+  "description": "Triggers the deployed Lakeflow Job and records its governed Delta outputs.",
+  "steps": [
+    {
+      "name": "Build run analytics tables",
+      "type": "external_job",
+      "target": "databricks",
+      "arguments": {
+        "job_id": 12345,
+        "job_parameters": {
+          "source_path": "/Volumes/agent_platform/landing/run_events/events.json",
+          "catalog": "agent_platform",
+          "bronze_schema": "bronze",
+          "silver_schema": "silver",
+          "gold_schema": "gold"
+        }
+      },
+      "data_lineage": {
+        "inputs": [
+          {
+            "type": "delta_table",
+            "catalog": "agent_platform",
+            "schema": "bronze",
+            "table": "run_events"
+          }
+        ],
+        "outputs": [
+          {
+            "type": "delta_table",
+            "catalog": "agent_platform",
+            "schema": "silver",
+            "table": "run_facts"
+          },
+          {
+            "type": "delta_table",
+            "catalog": "agent_platform",
+            "schema": "gold",
+            "table": "daily_run_metrics"
+          }
+        ]
+      },
+      "max_attempts": 2,
+      "timeout_seconds": 3600
+    }
+  ]
+}

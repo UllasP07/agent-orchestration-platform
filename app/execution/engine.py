@@ -122,8 +122,9 @@ async def execute_step(
                 "code": "step_timeout" if isinstance(exc, TimeoutError) else "step_execution_failed",
                 "message": str(exc),
                 "exception_type": type(exc).__name__,
+                "retryable": getattr(exc, "retryable", True),
             }
-            if step.attempt >= step.max_attempts:
+            if step.attempt >= step.max_attempts or not step.error["retryable"]:
                 step.status = "failed"
                 step.completed_at = _now_utc()
                 await _transition(step, on_transition)

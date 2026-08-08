@@ -1,7 +1,7 @@
 [project]
 name = "developer-platform-ai-agents"
-version = "0.4.0"
-description = "Durable agent orchestration platform with workers, REST, GraphQL, MCP, SDKs, and realtime events"
+version = "0.5.0"
+description = "Durable AI and data orchestration platform with pluggable external execution backends"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115.0",

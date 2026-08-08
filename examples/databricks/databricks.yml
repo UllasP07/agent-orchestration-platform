@@ -1,0 +1,54 @@
+bundle:
+  name: agent-platform-run-analytics
+
+variables:
+  catalog:
+    description: Unity Catalog catalog for the example tables.
+    default: agent_platform
+  source_path:
+    description: Cloud or Unity Catalog Volume path containing platform event JSON files.
+    default: /Volumes/agent_platform/landing/run_events/events.json
+
+resources:
+  jobs:
+    run_analytics:
+      name: agent-platform-run-analytics-${bundle.target}
+      parameters:
+        - name: source_path
+          default: ${var.source_path}
+        - name: catalog
+          default: ${var.catalog}
+        - name: bronze_schema
+          default: bronze
+        - name: silver_schema
+          default: silver
+        - name: gold_schema
+          default: gold
+      tasks:
+        - task_key: build_delta_tables
+          spark_python_task:
+            python_file: ./run_analytics_pipeline.py
+            parameters:
+              - --source-path
+              - "{{job.parameters.source_path}}"
+              - --catalog
+              - "{{job.parameters.catalog}}"
+              - --bronze-schema
+              - "{{job.parameters.bronze_schema}}"
+              - --silver-schema
+              - "{{job.parameters.silver_schema}}"
+              - --gold-schema
+              - "{{job.parameters.gold_schema}}"
+          environment_key: default
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "2"
+            dependencies: []
+
+targets:
+  dev:
+    default: true
+    mode: development
+  prod:
+    mode: production
