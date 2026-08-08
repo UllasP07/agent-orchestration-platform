@@ -18,6 +18,7 @@ from app.core.registry import registry  # noqa: E402
 from app.db.base import Base  # noqa: E402
 from app.db.init_db import init_db  # noqa: E402
 from app.db.session import engine  # noqa: E402
+from app.external.registry import external_backends  # noqa: E402
 from app.main import app  # noqa: E402
 
 
@@ -27,6 +28,7 @@ def isolated_database() -> Generator[None, None, None]:
     init_db()
     registry.agents.clear()
     registry.tools.clear()
+    external_backends.clear()
     bootstrap()
     yield
 

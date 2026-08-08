@@ -8,6 +8,7 @@ from app.db.models import (
     AgentModel,
     AgentRunModel,
     AppModel,
+    ExternalExecutionModel,
     PlatformEventModel,
     RunStepModel,
     WorkflowModel,

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def now_utc() -> datetime:
@@ -25,6 +25,53 @@ RunStatus = Literal[
     "failed",
 ]
 StepStatus = Literal["pending", "running", "retrying", "cancelled", "completed", "failed"]
+ExternalExecutionStatus = Literal[
+    "pending",
+    "submitting",
+    "queued",
+    "running",
+    "cancelling",
+    "cancelled",
+    "completed",
+    "failed",
+]
+
+
+UNITY_CATALOG_IDENTIFIER = r"^[A-Za-z_][A-Za-z0-9_]*$"
+
+
+class DeltaTableArtifact(BaseModel):
+    """A governed Delta table produced or consumed by a workflow step.
+
+    Identifiers deliberately use a conservative unquoted SQL subset. This
+    makes generated Spark SQL safe and keeps references portable across
+    Databricks workspaces.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    type: Literal["delta_table"] = "delta_table"
+    catalog: str = Field(min_length=1, max_length=255, pattern=UNITY_CATALOG_IDENTIFIER)
+    schema_name: str = Field(
+        alias="schema",
+        serialization_alias="schema",
+        min_length=1,
+        max_length=255,
+        pattern=UNITY_CATALOG_IDENTIFIER,
+    )
+    table: str = Field(min_length=1, max_length=255, pattern=UNITY_CATALOG_IDENTIFIER)
+    version: int | None = Field(default=None, ge=0)
+    uri: str | None = Field(default=None, max_length=2000)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def full_name(self) -> str:
+        return f"{self.catalog}.{self.schema_name}.{self.table}"
+
+
+class UnityCatalogLineage(BaseModel):
+    inputs: list[DeltaTableArtifact] = Field(default_factory=list, max_length=100)
+    outputs: list[DeltaTableArtifact] = Field(default_factory=list, max_length=100)
 
 
 class AppCreate(BaseModel):
@@ -122,9 +169,10 @@ class AgentRunRecord(BaseModel):
 
 class WorkflowStep(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    type: Literal["agent", "tool"]
+    type: Literal["agent", "tool", "external_job"]
     target: str = Field(min_length=1, max_length=200)
     arguments: dict[str, Any] = Field(default_factory=dict)
+    data_lineage: UnityCatalogLineage = Field(default_factory=UnityCatalogLineage)
     max_attempts: int = Field(default=3, ge=1, le=10)
     timeout_seconds: float = Field(default=30.0, gt=0, le=3600)
 
@@ -180,7 +228,7 @@ class RunStepRecord(BaseModel):
     app_id: str
     step_index: int = Field(ge=0)
     name: str
-    type: Literal["agent_tool", "workflow_tool", "workflow_agent"]
+    type: Literal["agent_tool", "workflow_tool", "workflow_agent", "workflow_external_job"]
     target: str
     status: StepStatus = "pending"
     attempt: int = 0
@@ -194,6 +242,35 @@ class RunStepRecord(BaseModel):
     completed_at: datetime | None = None
     created_at: datetime = Field(default_factory=now_utc)
     updated_at: datetime = Field(default_factory=now_utc)
+
+
+class ExternalExecutionRecord(BaseModel):
+    execution_id: str = Field(default_factory=lambda: prefixed_id("external"))
+    step_id: str
+    run_id: str
+    app_id: str
+    provider: str = Field(min_length=1, max_length=120)
+    attempt: int = Field(ge=1)
+    status: ExternalExecutionStatus = "pending"
+    external_run_id: str | None = Field(default=None, max_length=500)
+    external_state: str | None = Field(default=None, max_length=200)
+    external_url: str | None = Field(default=None, max_length=2000)
+    idempotency_key: str = Field(min_length=1, max_length=200)
+    request: dict[str, Any] = Field(default_factory=dict)
+    output: dict[str, Any] = Field(default_factory=dict)
+    error: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[DeltaTableArtifact] = Field(default_factory=list, max_length=100)
+    lineage: UnityCatalogLineage = Field(default_factory=UnityCatalogLineage)
+    submitted_at: datetime | None = None
+    last_polled_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime = Field(default_factory=now_utc)
+    updated_at: datetime = Field(default_factory=now_utc)
+
+
+class ExternalBackendPublic(BaseModel):
+    name: str
+    configured: bool
 
 
 class EventPublishRequest(BaseModel):

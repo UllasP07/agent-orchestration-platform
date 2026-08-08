@@ -143,6 +143,36 @@ class RunStepModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
 
 
+class ExternalExecutionModel(Base):
+    __tablename__ = "external_executions"
+    __table_args__ = (
+        UniqueConstraint("step_id", "attempt", name="uq_external_execution_step_attempt"),
+        UniqueConstraint("provider", "idempotency_key", name="uq_external_execution_provider_idempotency"),
+    )
+
+    execution_id: Mapped[str] = mapped_column(String, primary_key=True)
+    step_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    app_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, index=True, default="pending")
+    external_run_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    external_state: Mapped[str | None] = mapped_column(String, nullable=True)
+    external_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String, nullable=False)
+    request_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    output_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    error_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    artifacts_json: Mapped[list] = mapped_column(JSON, default=list)
+    lineage_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+
+
 class PlatformEventModel(Base):
     __tablename__ = "platform_events"
 

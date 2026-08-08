@@ -9,6 +9,7 @@ from app.core.bootstrap import bootstrap
 from app.core.config import settings
 from app.db.init_db import init_db
 from app.execution.worker import RunWorker
+from app.external.registry import external_backends
 from app.mcp.server import router as mcp_router
 
 init_db()
@@ -27,6 +28,7 @@ async def lifespan(_: FastAPI):
         if worker_task:
             worker.request_stop()
             await worker_task
+        await external_backends.aclose()
 
 
 app = FastAPI(title=settings.app_name, version=settings.app_version, lifespan=lifespan)
